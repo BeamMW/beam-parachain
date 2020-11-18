@@ -89,7 +89,6 @@ decl_module! {
                 definition: definition,
                 timestamp: timestamp,
                 pow: PoW::from_bytes(&pow),
-                //pow: PoW::new(),
             };
             let block_header_hash = block_header.get_hash();
             debug::info!("Calculated block header hash: {:X?}", block_header_hash.as_bytes());
