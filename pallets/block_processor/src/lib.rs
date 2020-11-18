@@ -50,6 +50,8 @@ decl_error! {
     pub enum Error for Module<T: Trait> {
         /// The block header has already been stored
         BlockHeaderAlreadyStored,
+        /// The block is having old hash type
+        BlockHeaderOldHashType,
     }
 }
 

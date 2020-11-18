@@ -1,11 +1,17 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+use crate::Error;
+
 use frame_support::debug;
 use frame_support::codec::{Codec, Decode, Encode};
-use sp_std::vec::Vec;
+use sp_std::{
+    vec::Vec,
+    convert::TryInto,
+};
+use sp_core::H256;
 use sha2::Digest;
 use bytes::{Buf, BufMut};
-use sp_core::H256;
+use blake2b_simd::{blake2b};
 
 const FORKS: &[&[u8]] = &[
     &[0xed, 0x91, 0xa7, 0x17, 0x31, 0x3c, 0x6e, 0xb0, 0xe3, 0xf0, 0x82, 0x41, 0x15, 0x84, 0xd0, 0xda, 0x8f, 0x0c, 0x8a, 0xf2, 0xa4, 0xac, 0x01, 0xe5, 0xaf, 0x19, 0x59, 0xe0, 0xec, 0x43, 0x38, 0xbc],
@@ -13,13 +19,11 @@ const FORKS: &[&[u8]] = &[
     &[0x1c, 0xe8, 0xf7, 0x21, 0xbf, 0x0c, 0x9f, 0xa7, 0x47, 0x37, 0x95, 0xa9, 0x7e, 0x36, 0x5a, 0xd3, 0x8b, 0xbc, 0x53, 0x9a, 0xab, 0x82, 0x1d, 0x69, 0x12, 0xd8, 0x6f, 0x24, 0xe6, 0x77, 0x20, 0xfc]
 ];
 
-#[derive(Decode, Encode, Default, Clone, PartialEq)]
-#[cfg_attr(feature = "std", derive(Debug))]
-pub struct PoW {
-    pub indices: Vec<u8>,
-    pub nonce: Vec<u8>,
-    pub difficulty: u32,
-}
+const BEAM_HASH_III_WORK_BIT_SIZE: u32 = 448;
+const BEAM_HASH_III_COLLISION_BIT_SIZE: u32 = 24;
+const BEAM_HASH_III_NUM_ROUNDS: u32 = 5;
+const BEAM_HASH_III_SOL_SIZE: u32 = 104;
+
 
 #[derive(Decode, Encode, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "std", derive(Debug))]
@@ -32,6 +36,22 @@ pub struct BeamBlockHeader {
     pub timestamp: u64,
     pub pow: PoW,
 }
+
+#[derive(Decode, Encode, Default, Clone, PartialEq)]
+#[cfg_attr(feature = "std", derive(Debug))]
+pub struct PoW {
+    pub indices: Vec<u8>,
+    pub nonce: Vec<u8>,
+    pub difficulty: u32,
+}
+
+#[derive(Default, Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+pub struct BeamPowHelper {
+    pub blake_state: blake2b_simd::State
+}
+
+pub struct BeamHashIII;
 
 fn encode_num(num: u64) -> Vec<u8> {
     let mut buf = Vec::new();
@@ -66,6 +86,42 @@ fn get_fork_hash(fork: usize) -> &'static [u8] {
     FORKS[0]
 }
 
+
+impl BeamBlockHeader {
+    fn encode_state(&self, total: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        // Prefix
+        buf.extend(encode_num(self.height));
+        buf.extend(self.prev.clone());
+        buf.extend(self.chain_work.clone());
+
+        // Element
+        buf.extend(self.kernels.iter().cloned());
+        buf.extend(self.definition.iter().cloned());
+        buf.extend(encode_num(self.timestamp));
+        buf.extend(encode_num(self.pow.difficulty.into()));
+
+        let fork = find_fork(self.height);
+        if fork >= 2 {
+            buf.extend(get_fork_hash(fork.into()));
+        }
+
+        if total {
+            buf.extend(self.pow.indices.iter().cloned());
+            buf.extend(self.pow.nonce.iter().cloned());
+        }
+
+        buf
+    }
+
+    pub fn get_hash(&self) -> H256 {
+        let buf = self.encode_state(true);
+        let hash = sha2::Sha256::digest(&buf);
+
+        H256::from_slice(hash.as_slice())
+    }
+}
 
 impl PoW {
     pub fn new() -> Self {
@@ -103,41 +159,71 @@ impl PoW {
             pow
         }
     }
+
+    pub fn is_valid(&self, input: &[u8], height: u64) -> bool {
+        let state_option = BeamPowHelper::reset(input, &self.nonce, height);
+
+        if let Some(state) = state_option {
+            BeamHashIII::is_valid_solution(&state, &self.indices)
+        } else {
+            false
+        }
+    }
 }
 
-impl BeamBlockHeader {
-    fn encode_state(&self, total: bool) -> Vec<u8> {
-        let mut buf = Vec::new();
 
-        // Prefix
-        buf.extend(encode_num(self.height));
-        buf.extend(self.prev.clone());
-        buf.extend(self.chain_work.clone());
+impl BeamHashIII {
+    pub fn initialize_state() -> blake2b_simd::State {
+        let mut personalization: Vec<u8> = Vec::new();
+        personalization.put(&b"Beam-PoW"[..]);
+        personalization.put_u32(BEAM_HASH_III_WORK_BIT_SIZE);
+        personalization.put_u32(BEAM_HASH_III_NUM_ROUNDS);
 
-        // Element
-        buf.extend(self.kernels.iter().cloned());
-        buf.extend(self.definition.iter().cloned());
-        buf.extend(encode_num(self.timestamp));
-        buf.extend(encode_num(self.pow.difficulty.into()));
-
-        let fork = find_fork(self.height);
-        if fork >= 2 {
-            buf.extend(get_fork_hash(fork.into()));
-        }
-
-        if total {
-            buf.extend(self.pow.indices.iter().cloned());
-            buf.extend(self.pow.nonce.iter().cloned());
-        }
-
-        buf
+        blake2b_simd::Params::new()
+            .hash_length(32)
+            .fanout(1)
+            .max_depth(1)
+            .personal(&personalization)
+            .to_state()
     }
 
-    pub fn get_hash(&self) -> H256 {
-        let buf = self.encode_state(true);
-        let hash = sha2::Sha256::digest(&buf);
+    pub fn is_valid_solution(base_state: &blake2b_simd::State, solution: &[u8]) -> bool {
+        if solution.len() != 104 {
+            return false;
+        }
 
-        H256::from_slice(hash.as_slice())
+        let mut state = base_state.clone();
+        // Last 4 bytes of solution are our extra nonce
+        state.update(&solution[100..104]);
+        let hash = state.finalize();
+
+        let mut pre_pow = hash.as_bytes();
+
+        //let mut pre_pow: Vec<u64> = Vec::with_capacity(4);
+        //pre_pow.resize(5, 0u64);
+        //pre_pow[0] = u32::from_le_bytes(hash.as_bytes().try_into().expect("PoW slice with wrong length")) as u64;
+
+        true
+    }
+}
+
+impl BeamPowHelper {
+    pub fn reset(input: &[u8], nonce: &[u8], height: u64) -> Option<blake2b_simd::State> {
+        // Everything but BeamHashIII is not supported
+        if find_fork(height) < 2 {
+            return None;
+        }
+
+        let mut state = BeamHashIII::initialize_state();
+        state.update(input);
+        state.update(nonce);
+
+        Some(state)
+    }
+
+    pub fn test_difficulty() -> bool {
+        //TODO
+        true
     }
 }
 
