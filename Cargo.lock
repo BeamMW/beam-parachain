@@ -3720,6 +3720,7 @@ dependencies = [
  "frame-system",
  "parity-scale-codec",
  "sha2 0.9.2",
+ "siphasher",
  "sp-core",
  "sp-io",
  "sp-runtime",
@@ -5990,6 +5991,11 @@ name = "signature"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29f060a7d147e33490ec10da418795238fd7545bba241504d6b31a409f2e6210"
+
+[[package]]
+name = "siphasher"
+version = "0.3.2"
+source = "git+https://github.com/sept-en/rust-siphash#28944668f3dc3f8428314ca394d5b45006b622a3"
 
 [[package]]
 name = "slab"

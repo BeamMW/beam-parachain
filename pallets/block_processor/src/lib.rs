@@ -5,6 +5,8 @@
 /// https://substrate.dev/docs/en/knowledgebase/runtime/frame
 
 mod block;
+mod beam_hash_3;
+mod util;
 
 use frame_support::{decl_module, decl_storage, decl_event, decl_error, ensure, dispatch, traits::Get, debug};
 use frame_system::ensure_signed;
