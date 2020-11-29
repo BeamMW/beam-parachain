@@ -24,6 +24,7 @@ pub struct BeamBlockHeader {
     pub definition: Vec<u8>,
     pub timestamp: u64,
     pub pow: PoW,
+    pub is_valid_pow: bool
 }
 
 #[derive(Decode, Encode, Default, Clone, PartialEq)]
@@ -35,6 +36,38 @@ pub struct PoW {
 }
 
 impl BeamBlockHeader {
+    pub fn new (
+        height: u64,
+        prev: Vec<u8>,
+        chain_work: Vec<u8>,
+        kernels: Vec<u8>,
+        definition: Vec<u8>,
+        timestamp: u64,
+        pow: PoW,
+    ) -> Self {
+        let mut block_header = BeamBlockHeader {
+            height: height,
+            prev: prev,
+            chain_work: chain_work,
+            kernels: kernels,
+            definition: definition,
+            timestamp: timestamp,
+            pow: pow,
+            is_valid_pow: false,
+        };
+
+        let hash_for_pow = block_header.get_hash_for_pow();
+        let is_valid_pow = block_header.pow.is_valid(hash_for_pow.as_bytes(), height);
+
+        block_header.is_valid_pow = is_valid_pow;
+
+        block_header
+    }
+
+    pub fn is_valid_pow(&self) -> bool {
+        self.is_valid_pow
+    }
+
     fn encode_state(&self, total: bool) -> Vec<u8> {
         let mut buf = Vec::new();
 
@@ -64,6 +97,13 @@ impl BeamBlockHeader {
 
     pub fn get_hash(&self) -> H256 {
         let buf = self.encode_state(true);
+        let hash = sha2::Sha256::digest(&buf);
+
+        H256::from_slice(hash.as_slice())
+    }
+
+    fn get_hash_for_pow(&self) -> H256 {
+        let buf = self.encode_state(false);
         let hash = sha2::Sha256::digest(&buf);
 
         H256::from_slice(hash.as_slice())
@@ -137,13 +177,12 @@ fn test_block_header_hash() {
         definition: definition,
         timestamp: timestamp,
         pow: pow,
+        is_valid_pow: true,
     };
 
     let block_header_hash = block_header.get_hash();
     let expected_block_header_hash = vec![0x23, 0xfe, 0x86, 0x73, 0xdb, 0x74, 0xc4, 0x3d, 0x49, 0x33, 0xb1, 0xf2, 0xd1, 0x6d, 0xb1, 0x1b, 0x1a, 0x48, 0x95, 0xe3, 0x92, 0x4a, 0x2f, 0x9c, 0xaf, 0x92, 0xaf, 0xa8, 0x9f, 0xd0, 0x1f, 0xaf];
-    println!("Calculated block header hash: {:X?}", block_header_hash.as_bytes());
+    //println!("Calculated block header hash: {:X?}", block_header_hash.as_bytes());
 
-    assert_eq!(
-        block_header_hash.as_bytes(), expected_block_header_hash
-    );
+    assert_eq!(block_header_hash.as_bytes(), expected_block_header_hash);
 }

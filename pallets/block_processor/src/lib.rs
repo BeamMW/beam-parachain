@@ -8,6 +8,9 @@ mod block;
 mod beam_hash_3;
 mod util;
 
+//#[macro_use]
+//extern crate libc_print;
+
 use frame_support::{decl_module, decl_storage, decl_event, decl_error, ensure, dispatch, traits::Get, debug};
 use frame_system::ensure_signed;
 use sp_std::vec::Vec;
@@ -52,6 +55,8 @@ decl_error! {
     pub enum Error for Module<T: Trait> {
         /// The block header has already been stored
         BlockHeaderAlreadyStored,
+        /// The block header hasn't been stored yet
+        BlockHeaderDoesntExist,
         /// The block is having old hash type
         BlockHeaderOldHashType,
     }
@@ -85,17 +90,19 @@ decl_module! {
             // https://substrate.dev/docs/en/knowledgebase/runtime/origin
             let sender = ensure_signed(origin)?;
 
-            let block_header = BeamBlockHeader {
-                height: height,
-                prev: prev,
-                chain_work: chain_work,
-                kernels: kernels,
-                definition: definition,
-                timestamp: timestamp,
-                pow: PoW::from_bytes(&pow),
-            };
+            let pow = PoW::from_bytes(&pow);
+            let block_header = BeamBlockHeader::new(
+                height,
+                prev,
+                chain_work,
+                kernels,
+                definition,
+                timestamp,
+                pow,
+            );
             let block_header_hash = block_header.get_hash();
             debug::info!("Calculated block header hash: {:X?}", block_header_hash.as_bytes());
+            debug::info!("Is valid PoW: {}", block_header.is_valid_pow());
 
             // Verify that the specified block header has not already been stored.
             ensure!(!BlockHeader::contains_key(&block_header_hash), Error::<T>::BlockHeaderAlreadyStored);
