@@ -11,6 +11,12 @@ mod util;
 //#[macro_use]
 //extern crate libc_print;
 
+#[macro_use]
+extern crate bitvec;
+
+#[macro_use]
+extern crate alloc;
+
 use frame_support::{decl_module, decl_storage, decl_event, decl_error, ensure, dispatch, traits::Get, debug};
 use frame_system::ensure_signed;
 use sp_std::vec::Vec;
