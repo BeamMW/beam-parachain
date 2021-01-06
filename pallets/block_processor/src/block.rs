@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 use crate::Error;
-use crate::beam_hash_3::{BeamHashIII, BeamPowHelper};
+use crate::beam_hash_3::{BeamHash3, BeamPowHelper};
 use crate::util::{encode_num, find_fork, get_fork_hash};
 
 use frame_support::debug;
@@ -151,10 +151,15 @@ impl PoW {
         let state_option = BeamPowHelper::reset(input, &self.nonce, height);
 
         if let Some(state) = state_option {
-            BeamHashIII::is_valid_solution(&state, &self.indices)
+            BeamHash3::is_valid_solution(&state, &self.indices) && self.test_difficulty()
         } else {
             false
         }
+    }
+
+    pub fn test_difficulty(&self) -> bool {
+        //TODO
+        true
     }
 }
 

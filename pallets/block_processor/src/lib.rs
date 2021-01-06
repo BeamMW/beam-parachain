@@ -61,6 +61,8 @@ decl_error! {
     pub enum Error for Module<T: Trait> {
         /// The block header has already been stored
         BlockHeaderAlreadyStored,
+        /// The block header has invalid PoW
+        BlockHeaderInvalidProofOfWork,
         /// The block header hasn't been stored yet
         BlockHeaderDoesntExist,
         /// The block is having old hash type
@@ -89,7 +91,6 @@ decl_module! {
             definition: Vec<u8>,
             timestamp: u64,
             pow: Vec<u8>,
-            //pow: PoW,
         ) -> dispatch::DispatchResult {
             // Check that the extrinsic was signed and get the signer.
             // This function will return an error if the extrinsic is not signed.
@@ -109,6 +110,9 @@ decl_module! {
             let block_header_hash = block_header.get_hash();
             debug::info!("Calculated block header hash: {:X?}", block_header_hash.as_bytes());
             debug::info!("Is valid PoW: {}", block_header.is_valid_pow());
+
+            // Verify that the specified block header has valid pow
+            ensure!(block_header.is_valid_pow(), Error::<T>::BlockHeaderInvalidProofOfWork);
 
             // Verify that the specified block header has not already been stored.
             ensure!(!BlockHeader::contains_key(&block_header_hash), Error::<T>::BlockHeaderAlreadyStored);

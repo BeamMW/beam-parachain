@@ -29,7 +29,7 @@ blake2b_simd = { default-features = false, version = '0.5.11' }
 sp-core = { default-features = false, version = '2.0.0' }
 bytes = { default-features = false, version = '0.6.0' }
 fixedbitset = { default-features = false, version = '0.3.1' }
-bitvec = { default-features = false, features = ["alloc"],  version = '0.19.4' }
+bitvec = { default-features = false, features = ["alloc"],  version = '0.20.1' }
 
 #libc-print = { default-features = false, version = "0.1.14" }
 
@@ -49,4 +49,5 @@ std = [
     'frame-support/std',
     'frame-system/std',
     'sp-std/std',
+    'sp-core/std',
 ]

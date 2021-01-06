@@ -1,7 +1,6 @@
 use crate::util::{find_fork};
 
 use frame_support::{debug};
-use core::ops::{Shl, Shr, BitAnd};
 use core::hash::Hasher;
 
 use blake2b_simd::{
@@ -11,19 +10,20 @@ use blake2b_simd::{
 use siphasher::sip::BeamSipHasher24;
 use bitvec::prelude::*;
 use bytes::{BufMut};
-use fixedbitset::{FixedBitSet};
 
 use sp_std::{
     vec::Vec,
 };
 
-const BEAM_HASH_III_WORK_BIT_SIZE: usize = 448;
-const BEAM_HASH_III_COLLISION_BIT_SIZE: usize = 24;
-const BEAM_HASH_III_NUM_ROUNDS: usize = 5;
-const BEAM_HASH_III_SOL_SIZE: usize = 104;
+const BEAM_HASH_3_WORK_BIT_SIZE: usize = 448;
+const BEAM_HASH_3_WORK_BYTES: usize = BEAM_HASH_3_WORK_BIT_SIZE / 8;
+const BEAM_HASH_3_WORK_WORDS: usize = BEAM_HASH_3_WORK_BYTES / 8;
+const BEAM_HASH_3_COLLISION_BIT_SIZE: usize = 24;
+const BEAM_HASH_3_NUM_ROUNDS: usize = 5;
+const BEAM_HASH_3_SOL_SIZE: usize = 104;
 
 
-pub struct BeamHashIII;
+pub struct BeamHash3;
 
 #[derive(Default, Clone)]
 #[cfg_attr(feature = "std", derive(Debug))]
@@ -31,7 +31,10 @@ pub struct BeamPowHelper {
     blake_state: Blake2b_State
 }
 
-struct BeamHashIII_StepElement {
+#[derive(Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+#[allow(non_camel_case_types)]
+struct BeamHash3_StepElement {
     work_bits: BitVec::<Lsb0, usize>,
     index_tree: Vec<u32>,
     //work_bits: BitArray<LocalBits, [usize; 1]>,
@@ -45,12 +48,12 @@ fn get_bit_at(input: u8, n: u8) -> bool {
     }
 }
 
-impl BeamHashIII {
+impl BeamHash3 {
     pub fn initialize_state() -> Blake2b_State {
         let mut personalization: Vec<u8> = Vec::new();
         personalization.put(&b"Beam-PoW"[..]);
-        personalization.put_u32_le(BEAM_HASH_III_WORK_BIT_SIZE as u32);
-        personalization.put_u32_le(BEAM_HASH_III_NUM_ROUNDS as u32);
+        personalization.put_u32_le(BEAM_HASH_3_WORK_BIT_SIZE as u32);
+        personalization.put_u32_le(BEAM_HASH_3_NUM_ROUNDS as u32);
 
         debug::info!("Blake2b personalization: {:x?}", personalization.as_slice());
 
@@ -62,58 +65,94 @@ impl BeamHashIII {
             .to_state()
     }
 
-    pub fn is_valid_solution(base_state: &Blake2b_State , solution: &[u8]) -> bool {
-        if solution.len() != 104 {
+    pub fn is_valid_solution(base_state: &Blake2b_State, solution: &[u8]) -> bool {
+        if solution.len() != BEAM_HASH_3_SOL_SIZE {
             return false;
         }
 
         let mut state = base_state.clone();
         // Last 4 bytes of solution are our extra nonce
-        state.update(&solution[100..104]);
+        state.update(&solution[BEAM_HASH_3_SOL_SIZE - 4..]);
         let hash = state.finalize();
 
-        if cfg!(test) {
-            //assert_eq!("Blake2b hash: {:?}", &hash.to_hex());
-        }
         debug::info!("Blake2b hash: {:?}", &hash.to_hex());
 
-        let mut pre_pow = hash.as_bytes();
+        let pre_pow = hash.as_bytes();
 
         let indices = BeamPowHelper::get_indices_from_minimal(solution);
-        let mut steps: Vec<BeamHashIII_StepElement> = Vec::new();
+        let mut steps: Vec<BeamHash3_StepElement> = Vec::new();
         for i in 0..indices.len() {
-            steps.push(BeamHashIII_StepElement::new(pre_pow, indices[i]));
-            break;
+            steps.push(BeamHash3_StepElement::new(pre_pow, indices[i]));
         }
-        //let mut pre_pow: Vec<u64> = Vec::with_capacity(4);
-        //pre_pow.resize(5, 0u64);
-        //pre_pow[0] = u32::from_le_bytes(hash.as_bytes().try_into().expect("PoW slice with wrong length")) as u64;
 
-        true
+        let mut round = 1;
+        let mut step = 1;
+        while step < indices.len() {
+            let mut i0 = 0;
+            while i0 < indices.len() {
+                let mut remaining_len = BEAM_HASH_3_WORK_BIT_SIZE as u32 - (round - 1)*BEAM_HASH_3_COLLISION_BIT_SIZE as u32;
+                if round == 5 {
+                    remaining_len -= 64;
+                }
+
+                steps[i0].apply_mix(remaining_len, &indices[i0..], step);
+
+                let i1 = i0 + step;
+                steps[i1].apply_mix(remaining_len, &indices[i1..], step);
+
+                if !steps[i0].has_collision(&steps[i1]) {
+                    if cfg!(test) {
+                        assert_eq!("Collision error!", "");
+                    }
+
+                    return false;
+                }
+
+                if indices[i0] >= indices[i1] {
+                    if cfg!(test) {
+                        assert_eq!("Non-distinct indices error!", "");
+                    }
+
+                    return false;
+                }
+
+                remaining_len = BEAM_HASH_3_WORK_BIT_SIZE as u32 - round*BEAM_HASH_3_COLLISION_BIT_SIZE as u32;
+                if round == 4 {
+                    remaining_len -= 64;
+                } else if round == 5 {
+                    remaining_len = BEAM_HASH_3_COLLISION_BIT_SIZE as u32;
+                }
+
+                let step_i1 = steps[i1].clone();
+                steps[i0].merge_with(&step_i1, remaining_len);
+
+                i0 = i1 + step;
+            }
+
+            step <<= 1;
+            round += 1;
+        }
+
+        steps[0].is_zero()
     }
 }
 
 impl BeamPowHelper {
     pub fn reset(input: &[u8], nonce: &[u8], height: u64) -> Option<Blake2b_State> {
-        // Everything but BeamHashIII is not supported
+        // Everything but BeamHash3 is not supported
         if find_fork(height) < 2 {
             return None;
         }
 
-        let mut state = BeamHashIII::initialize_state();
+        let mut state = BeamHash3::initialize_state();
         state.update(input);
         state.update(nonce);
 
         Some(state)
     }
 
-    pub fn test_difficulty() -> bool {
-        //TODO
-        true
-    }
-
     pub fn get_indices_from_minimal(pow_solution: &[u8]) -> Vec<u32> {
-        let num_collision_bits = BEAM_HASH_III_COLLISION_BIT_SIZE as usize + 1;
+        let num_collision_bits = BEAM_HASH_3_COLLISION_BIT_SIZE as usize + 1;
         let num_chunks = 32_usize;
         let chunk_size = 32_usize;
 
@@ -146,8 +185,8 @@ impl BeamPowHelper {
         }
         let mut res: Vec<u32> = Vec::new();
         let mut chunks = in_stream.as_bitslice().chunks_exact(chunk_size);
-        for i in 0..num_chunks {
-            let mut value_bits = chunks.next().unwrap();
+        for _ in 0..num_chunks {
+            let value_bits = chunks.next().unwrap();
 
             let mut value_arr: [u8; 4] = Default::default();
             value_arr.copy_from_slice(value_bits.as_slice());
@@ -161,30 +200,8 @@ impl BeamPowHelper {
     }
 }
 
-//fn bitset_shl(bitset: FixedBitSet, rhs: usize) -> FixedBitSet {
-//    let bits_in_block = 8 * 4;
-//    let num_blocks_shift = rhs / bits_in_block;
-//
-//    // rotate the bitset by 'rhs' places
-//    let (a, b) = bitset.as_slice().split_at(num_blocks_shift);
-//    let mut blocks: Vec<u32> = vec![];
-//    blocks.extend_from_slice(b);
-//    blocks.extend_from_slice(a);
-//
-//    FixedBitSet::with_capacity_and_blocks(bitset.len(), blocks)
-//}
-
-//fn bitvec_shr(bitvec: BitVec::<Msb0, u8>, shift: usize) -> BitVec::<Msb0, u8> {
-//    let mut vec = bitvec.clone();
-//    for _ in 0..shift {
-//        vec.insert(0, false);
-//    }
-//    return vec;
-//}
-
-impl BeamHashIII_StepElement {
+impl BeamHash3_StepElement {
     pub fn new(pre_pow: &[u8], index: u32) -> Self {
-        //let mut work_bits = bitvec!();
         let mut work_bits = bitvec![Lsb0, usize; 0; 0];
 
         // We need to start from 6
@@ -195,20 +212,6 @@ impl BeamHashIII_StepElement {
             hasher.set_state_from_bytes(pre_pow);
             let hash = hasher.finish();
 
-            if i == 6 && cfg!(test) {
-                let expected_pow_state = &[
-                    0xc0, 0x9d, 0xd9, 0x3e, 0xf2, 0x5c, 0xdb, 0xa0,
-                    0x95, 0xc9, 0x9f, 0xab, 0x3c, 0x5f, 0xfb, 0xac,
-                    0x3e, 0x72, 0xaf, 0x34, 0x96, 0xd8, 0xb4, 0x8d,
-                    0x03, 0x04, 0xf6, 0xf2, 0xac, 0x18, 0x98, 0x68
-                ];
-                let expected_nonce = 3414214;
-                let expected_hash = 12899870395040861258 as u64;
-                assert_eq!(expected_pow_state, pre_pow);
-                assert_eq!(expected_nonce, nonce);
-                assert_eq!(expected_hash, hash);
-            }
-
             let hash_bytes = hash.to_le_bytes();
 
             for byte in &hash_bytes {
@@ -218,20 +221,85 @@ impl BeamHashIII_StepElement {
             }
         }
 
-        if cfg!(test) {
-            //assert_eq!(&[0usize, 1usize], work_bits.as_slice());
-        }
-
         let mut index_tree: Vec<u32> = Vec::new();
         index_tree.push(index);
 
-        BeamHashIII_StepElement {
+        BeamHash3_StepElement {
             work_bits: work_bits,
             index_tree: index_tree,
         }
     }
 
-    pub fn from(a: &Self, b: &Self, remaining_len: u32) {
+    pub fn merge_with(&mut self, other: &Self, remaining_len: u32) -> bool {
+        if remaining_len % 8 != 0 {
+            return false;
+        }
+
+        self.work_bits ^= other.work_bits.clone();
+
+        let work_bits = self.work_bits.as_mut_raw_slice().view_bits_mut::<Msb0>();
+        work_bits.rotate_right(BEAM_HASH_3_COLLISION_BIT_SIZE);
+        work_bits[..BEAM_HASH_3_WORK_BIT_SIZE-remaining_len as usize].set_all(false);
+
+        true
+    }
+
+    pub fn apply_mix(&mut self, remaining_len: u32, indices: &[u32], step: usize) {
+        let work_word_size = 8;
+
+        let work_bits = self.work_bits.clone();
+        // This should have the size of 9
+        let mut temp_words: Vec<usize> = Vec::new();
+        temp_words.extend_from_slice(work_bits.as_raw_slice().view_bits::<Msb0>().as_slice());
+        temp_words.reverse();
+        temp_words.push(0);
+        temp_words.push(0);
+
+        let mut pad_num = ((512 - remaining_len) + BEAM_HASH_3_COLLISION_BIT_SIZE as u32) / (BEAM_HASH_3_COLLISION_BIT_SIZE as u32 + 1);
+        if pad_num > step as u32 {
+            pad_num = step as u32;
+        }
+
+        for i in 0..pad_num as usize {
+            let mut shift = remaining_len as usize + i * (BEAM_HASH_3_COLLISION_BIT_SIZE + 1);
+            let n0 = shift / (work_word_size * 8);
+            shift %= work_word_size * 8;
+
+            let index = indices[i];
+
+            temp_words[n0] |= ((index as u64) << (shift as u32)) as usize;
+
+            if shift + BEAM_HASH_3_COLLISION_BIT_SIZE + 1 > work_word_size * 8 {
+                temp_words[n0 + 1] |= (index >> (work_word_size * 8 - shift)) as usize;
+            }
+        }
+
+        // Applying the mix from the lined up bits
+        let mut result = 0u64;
+        for i in 0..8 {
+            let word = temp_words[i] as u64;
+            let word_rotated = word.rotate_left((29 * (i as u32 + 1)) & 0x3F);
+            result = result.overflowing_add(word_rotated).0;
+        }
+
+        result = result.rotate_left(24);
+
+        // Wipe out lowest 64 bits in favor of the mixed bits
+        //let result_bits = BitSlice::<Lsb0, _>::from_element(&result);
+        //self.work_bits.as_mut_bitslice()[0..work_word_size * 8] = result_bits;
+        self.work_bits.as_mut_raw_slice()[BEAM_HASH_3_WORK_WORDS - 1] = result as usize;
+    }
+
+    fn get_collision_bits(&self) -> &BitSlice<Msb0, usize> {
+        &self.work_bits.as_raw_slice().view_bits::<Msb0>()[BEAM_HASH_3_WORK_BIT_SIZE-BEAM_HASH_3_COLLISION_BIT_SIZE..]
+    }
+
+    pub fn has_collision(&self, other: &Self) -> bool {
+        self.get_collision_bits() == other.get_collision_bits()
+    }
+
+    pub fn is_zero(&self) -> bool {
+        !self.work_bits.any()
     }
 }
 
@@ -239,8 +307,8 @@ impl BeamHashIII_StepElement {
 fn test_beam_hash3_blake2b_personalization() {
     let mut personalization: Vec<u8> = Vec::new();
     personalization.put(&b"Beam-PoW"[..]);
-    personalization.put_u32_le(BEAM_HASH_III_WORK_BIT_SIZE as u32);
-    personalization.put_u32_le(BEAM_HASH_III_NUM_ROUNDS as u32);
+    personalization.put_u32_le(BEAM_HASH_3_WORK_BIT_SIZE as u32);
+    personalization.put_u32_le(BEAM_HASH_3_NUM_ROUNDS as u32);
 
     let expected_personalization = &[
         0x42, 0x65, 0x61, 0x6d, 0x2d, 0x50, 0x6f, 0x57,
@@ -253,7 +321,7 @@ fn test_beam_hash3_blake2b_personalization() {
 fn test_beam_hash3_blake2b_state() {
     // Test vector: "abc"
     let data = &[0x61, 0x62, 0x63];
-    let mut state = BeamHashIII::initialize_state();
+    let mut state = BeamHash3::initialize_state();
     state.update(data);
 
     let expected_hash = &[
@@ -323,9 +391,10 @@ fn test_beam_hash3_is_valid_solution() -> Result<(), String> {
     // Test height for the solution
     let height = 903720;
 
-    let mut state = BeamPowHelper::reset(input, pow_nonce, height)
+    let state = BeamPowHelper::reset(input, pow_nonce, height)
         .ok_or_else(|| "Can't call BeamPowHelper::reset using provided args. State is None")?;
-    //BeamHashIII::is_valid_solution(&state, pow_solution);
+    let is_valid_solution = BeamHash3::is_valid_solution(&state, pow_solution);
+    assert!(is_valid_solution);
 
     Ok(())
 }
@@ -342,7 +411,7 @@ fn test_beam_pow_helper_get_indices_from_minimal_raw() -> Result<(), String> {
         0xa2, 0x70, 0xe8, 0xd8, 0xfb, 0xc3, 0x37, 0x77, 0x61, 0x9b, 0x00, 0x00, 0x00, 0x00,
     ];
 
-    let num_collision_bits = BEAM_HASH_III_COLLISION_BIT_SIZE as usize + 1;
+    let num_collision_bits = BEAM_HASH_3_COLLISION_BIT_SIZE as usize + 1;
     let num_chunks = 32_usize;
     let chunk_size = 32_usize;
     let mut in_stream = bitvec![Msb0, u8; 0; 800];
@@ -361,7 +430,6 @@ fn test_beam_pow_helper_get_indices_from_minimal_raw() -> Result<(), String> {
             in_stream.set(i * 8 + (7 - j), get_bit_at(rev_solution[i], j as u8));
         }
     }
-    //println!("Instream: {}", &in_stream);
 
     // During processing we expect that the first bit in each chunk represents
     // the whole first byte with ommitted zeroes on the left.
@@ -373,19 +441,15 @@ fn test_beam_pow_helper_get_indices_from_minimal_raw() -> Result<(), String> {
             in_stream.insert(pos, false);
         }
     }
-    //println!("Instream updated with size {}: {}", in_stream.len(), &in_stream);
 
     let mut res: Vec<u32> = Vec::new();
     let mut chunks = in_stream.as_bitslice().chunks_exact(chunk_size);
-    for i in 0..num_chunks {
-        let mut value_bits = chunks.next().unwrap();
-        //println!("Chunk value bits: {:?}", value_bits.as_slice());
+    for _ in 0..num_chunks {
+        let value_bits = chunks.next().unwrap();
 
         let mut value_arr: [u8; 4] = Default::default();
         value_arr.copy_from_slice(value_bits.as_slice());
-        //println!("Chunk value array: {:?}", value_arr);
         let value = u32::from_be_bytes(value_arr);
-        //println!("Value: {}", value);
 
         res.push(value);
     }
@@ -398,8 +462,6 @@ fn test_beam_pow_helper_get_indices_from_minimal_raw() -> Result<(), String> {
         2579751, 29789184, 9495279, 33102015, 2685448, 13058949, 14618607, 20366062,
     ];
     assert_eq!(res, expected_res);
-
-    println!("Res: {:?}", &res);
 
     Ok(())
 }
@@ -424,8 +486,6 @@ fn test_beam_pow_helper_get_indices_from_minimal() {
         2579751, 29789184, 9495279, 33102015, 2685448, 13058949, 14618607, 20366062,
     ];
     assert_eq!(indices, expected_indices);
-
-    println!("Get indices from minimal test is successful!");
 }
 
 #[test]
@@ -456,14 +516,14 @@ fn test_beam_hash3_step_element_new_from_prepow() -> Result<(), String> {
         .ok_or_else(|| "Can't call BeamPowHelper::reset using provided args. State is None")?;
 
     // Last 4 bytes of solution are our extra nonce
-    state.update(&pow_solution[100..104]);
+    state.update(&pow_solution[BEAM_HASH_3_SOL_SIZE - 4..]);
     let hash = state.finalize();
 
     let pre_pow = hash.as_bytes();
     let indices = BeamPowHelper::get_indices_from_minimal(pow_solution);
-    let mut steps: Vec<BeamHashIII_StepElement> = Vec::new();
+    let mut steps: Vec<BeamHash3_StepElement> = Vec::new();
     for i in 0..indices.len() {
-        steps.push(BeamHashIII_StepElement::new(pre_pow, indices[i]));
+        steps.push(BeamHash3_StepElement::new(pre_pow, indices[i]));
         break;
     }
     println!("Step 0: {}", steps[0].work_bits);

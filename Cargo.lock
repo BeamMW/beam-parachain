@@ -456,12 +456,12 @@ dependencies = [
 
 [[package]]
 name = "bitvec"
-version = "0.19.4"
+version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7ba35e9565969edb811639dbebfe34edc0368e472c5018474c8eb2543397f81"
+checksum = "f5011ffc90248764d7005b0e10c7294f5aa1bd87d9dd7248f4ad475b347c294d"
 dependencies = [
  "funty",
- "radium 0.5.3",
+ "radium 0.6.1",
  "tap",
  "wyz",
 ]
@@ -3738,7 +3738,7 @@ dependencies = [
 name = "pallet-beam-block-processor"
 version = "0.0.1"
 dependencies = [
- "bitvec 0.19.4",
+ "bitvec 0.20.1",
  "blake2b_simd",
  "bytes 0.6.0",
  "fixedbitset 0.3.1",
@@ -4487,9 +4487,9 @@ checksum = "def50a86306165861203e7f84ecffbbdfdea79f0e51039b33de1e952358c47ac"
 
 [[package]]
 name = "radium"
-version = "0.5.3"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "941ba9d78d8e2f7ce474c015eea4d9c6d25b6a3327f9832ee29a4de27f91bbb8"
+checksum = "e9e006811e1fdd12672b0820a7f44c18dde429f367d50cec003d22aa9b3c8ddc"
 
 [[package]]
 name = "rand"
